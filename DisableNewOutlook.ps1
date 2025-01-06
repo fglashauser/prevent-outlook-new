@@ -1,11 +1,12 @@
 <#
 .SYNOPSIS
   Blockiert das automatische Umschalten auf das neue Outlook in Microsoft 365 
-  für alle Benutzer-SIDs unter HKEY_USERS.
+  für alle Benutzer-SIDs unter HKEY_USERS (ausgenommen ".DEFAULT").
 
 .DESCRIPTION
-  Das Skript durchsucht HKEY_USERS nach Benutzer-SIDs (S-1-5-21-...) und setzt
-  folgende Registry-Werte in jedem Benutzerhive, um das neue Outlook zu deaktivieren:
+  Das Skript durchsucht HKEY_USERS nach Benutzer-SIDs und setzt
+  folgende Registry-Werte in jedem Benutzer-Hive (falls die Pfade existieren),
+  um das neue Outlook zu deaktivieren:
     - HKCU:\Software\Microsoft\office\16.0\Outlook\Preferences
         "NewOutlookMigrationUserSetting" = 0 (DWORD)
         "UseNewOutlook"                  = 0 (DWORD)
@@ -32,53 +33,33 @@ param(
 
 Write-Host "Starte das Skript zum Deaktivieren des neuen Outlook..." -ForegroundColor Cyan
 
-# Alle möglichen Unter-Keys von HKEY_USERS auslesen
-#$sidList = Get-ChildItem -Path "Registry::HKEY_USERS" | Where-Object {
-#    $_.PSChildName -match "^S-1-5-"
-#}
-$sidList = Get-ChildItem -Path "Registry::HKEY_USERS"
+# Liste aller Keys unter HKEY_USERS abrufen
+# Ausschließen von '.DEFAULT'
+$sidList = Get-ChildItem -Path "Registry::HKEY_USERS" `
+            | Where-Object { $_.PSChildName -ne ".DEFAULT" }
 
 if ($sidList.Count -eq 0) {
     Write-Host "Keine gültigen Benutzer-SIDs unter HKEY_USERS gefunden." -ForegroundColor Yellow
     return
 }
 
-Write-Host "Gefundene Benutzer-SIDs:" -ForegroundColor Green
+Write-Host "Gefundene Benutzer-SIDs (ohne .DEFAULT):" -ForegroundColor Green
 $sidList | ForEach-Object {
     Write-Host "  - $($_.PSChildName)"
 }
 
-# Die einzelnen Registry-Pfade, in denen wir Einträge vornehmen wollen:
+# Registry-Unterpfade, in denen wir Einträge vornehmen wollen
 $paths = @(
     "Software\Microsoft\office\16.0\Outlook\Preferences",
     "Software\Microsoft\office\16.0\Outlook\Options\General"
 )
 
 foreach($sidKey in $sidList) {
+
     $sid = $sidKey.PSChildName
-    
     Write-Host "`nBearbeite SID: $sid" -ForegroundColor Cyan
-
-    # 1) Die Registry-Pfade anlegen (falls sie noch nicht existieren).
-    foreach($path in $paths) {
-        $fullPath = "Registry::HKEY_USERS\$sid\$path"
-        if ($WhatIf) {
-            Write-Host "Would create path $fullPath" -ForegroundColor DarkYellow
-        }
-        else {
-            New-Item -Path $fullPath -Force | Out-Null
-        }
-    }
-
-    # 2) Jetzt die benötigten Werte setzen:
-    #    - Software\Microsoft\office\16.0\Outlook\Preferences
-    #        * NewOutlookMigrationUserSetting = 0
-    #        * UseNewOutlook                  = 0
-    #    - Software\Microsoft\office\16.0\Outlook\Options\General
-    #        * DoNewOutlookAutoMigration             = 0
-    #        * NewOutlookAutoMigrationRetryIntervals = 0
-    #        * HideNewOutlookToggle                  = 1
-
+    
+    # Diese Sammlung beschreibt, welche Werte wir setzen wollen
     $regValues = @(
         @{
             Key   = "Registry::HKEY_USERS\$sid\Software\Microsoft\office\16.0\Outlook\Preferences"
@@ -108,12 +89,20 @@ foreach($sidKey in $sidList) {
     )
 
     foreach($item in $regValues) {
-        if ($WhatIf) {
-            Write-Host "Would set `"$($item.Name)`" to `"$($item.Value)`" in $($item.Key)" -ForegroundColor DarkYellow
+        # Prüfen, ob dieser Pfad überhaupt existiert
+        if (Test-Path $item.Key) {
+            # Pfad existiert -> Wir können den Registry-Eintrag setzen
+            if ($WhatIf) {
+                Write-Host "Would set `"$($item.Name)`" to `"$($item.Value)`" in $($item.Key)" -ForegroundColor DarkYellow
+            }
+            else {
+                Set-ItemProperty -Path $item.Key -Name $item.Name -Type DWord -Value $item.Value
+                Write-Host "  -> $($item.Name) wurde auf $($item.Value) gesetzt." -ForegroundColor Green
+            }
         }
         else {
-            Set-ItemProperty -Path $item.Key -Name $item.Name -Type DWord -Value $item.Value
-            Write-Host "  -> $($item.Name) wurde auf $($item.Value) gesetzt." -ForegroundColor Green
+            # Pfad existiert nicht -> Überspringen
+            Write-Host "  -> Überspringe $($item.Key), da es nicht existiert." -ForegroundColor Yellow
         }
     }
 }
